@@ -9,8 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 複製應用程式檔案
 COPY . .
 
-# 暴露 port（使用環境變數，預設 8080）
-ENV PORT=8080
+# 暴露 port（使用環境變數，預設 8501 配合 Zeabur）
+ENV PORT=8501
 EXPOSE ${PORT}
 
 # 啟動應用
