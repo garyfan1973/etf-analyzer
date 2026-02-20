@@ -3,8 +3,38 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import pandas_ta as ta
+import numpy as np
 from datetime import datetime, timedelta
+
+# 技術指標計算函數
+def calculate_sma(data, window):
+    """計算簡單移動平均線"""
+    return data.rolling(window=window).mean()
+
+def calculate_rsi(data, periods=14):
+    """計算相對強弱指標 RSI"""
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    """計算 MACD 指標"""
+    ema_fast = data.ewm(span=fast, adjust=False).mean()
+    ema_slow = data.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def calculate_bollinger_bands(data, window=20, num_std=2):
+    """計算布林通道"""
+    sma = data.rolling(window=window).mean()
+    std = data.rolling(window=window).std()
+    upper_band = sma + (std * num_std)
+    lower_band = sma - (std * num_std)
+    return upper_band, sma, lower_band
 
 # 頁面配置
 st.set_page_config(
@@ -102,34 +132,47 @@ try:
         st.write(f"**52週最高:** ${info.get('fiftyTwoWeekHigh', 'N/A')}")
     
     with col2:
-        st.write(f"**資產規模:** ${info.get('totalAssets', 0)/1e9:.2f}B")
-        st.write(f"**費用率:** {info.get('annualReportExpenseRatio', 0)*100:.2f}%")
+        total_assets = info.get('totalAssets', 0)
+        if total_assets:
+            st.write(f"**資產規模:** ${total_assets/1e9:.2f}B")
+        else:
+            st.write(f"**資產規模:** N/A")
+        
+        expense_ratio = info.get('annualReportExpenseRatio', info.get('expenseRatio', 0))
+        if expense_ratio:
+            st.write(f"**費用率:** {expense_ratio*100:.2f}%")
+        else:
+            st.write(f"**費用率:** N/A")
+            
         st.write(f"**52週最低:** ${info.get('fiftyTwoWeekLow', 'N/A')}")
     
     with col3:
-        st.write(f"**殖利率:** {info.get('yield', 0)*100:.2f}%")
+        div_yield = info.get('yield', info.get('trailingAnnualDividendYield', 0))
+        if div_yield:
+            st.write(f"**殖利率:** {div_yield*100:.2f}%")
+        else:
+            st.write(f"**殖利率:** N/A")
+            
         st.write(f"**Beta:** {info.get('beta3Year', 'N/A')}")
-        st.write(f"**平均成交量:** {info.get('averageVolume', 0)/1e6:.1f}M")
+        avg_vol = info.get('averageVolume', 0)
+        if avg_vol:
+            st.write(f"**平均成交量:** {avg_vol/1e6:.1f}M")
+        else:
+            st.write(f"**平均成交量:** N/A")
     
     # 計算技術指標
-    df['SMA_20'] = ta.sma(df['Close'], length=20)
-    df['SMA_50'] = ta.sma(df['Close'], length=50)
-    df['SMA_200'] = ta.sma(df['Close'], length=200)
+    df['SMA_20'] = calculate_sma(df['Close'], 20)
+    df['SMA_50'] = calculate_sma(df['Close'], 50)
+    df['SMA_200'] = calculate_sma(df['Close'], 200)
     
     # RSI
-    df['RSI'] = ta.rsi(df['Close'], length=14)
+    df['RSI'] = calculate_rsi(df['Close'], 14)
     
     # MACD
-    macd = ta.macd(df['Close'])
-    df['MACD'] = macd['MACD_12_26_9']
-    df['MACD_signal'] = macd['MACDs_12_26_9']
-    df['MACD_hist'] = macd['MACDh_12_26_9']
+    df['MACD'], df['MACD_signal'], df['MACD_hist'] = calculate_macd(df['Close'])
     
     # 布林通道
-    bbands = ta.bbands(df['Close'], length=20)
-    df['BB_upper'] = bbands['BBU_20_2.0']
-    df['BB_middle'] = bbands['BBM_20_2.0']
-    df['BB_lower'] = bbands['BBL_20_2.0']
+    df['BB_upper'], df['BB_middle'], df['BB_lower'] = calculate_bollinger_bands(df['Close'], 20)
     
     # 技術分析圖表
     st.header("📈 技術分析圖表")
@@ -223,7 +266,7 @@ try:
     )
     fig.add_trace(
         go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram',
-               marker_color=df['MACD_hist'].apply(lambda x: 'green' if x > 0 else 'red')),
+               marker_color=['green' if x > 0 else 'red' for x in df['MACD_hist']]),
         row=4, col=1
     )
     
@@ -256,44 +299,55 @@ try:
         sma_50 = df['SMA_50'].iloc[-1]
         sma_200 = df['SMA_200'].iloc[-1]
         
-        if last_price > sma_20 > sma_50 > sma_200:
-            trend = "🟢 強勢上漲趨勢"
-        elif last_price < sma_20 < sma_50 < sma_200:
-            trend = "🔴 強勢下跌趨勢"
-        elif last_price > sma_50:
-            trend = "🟡 中性偏多"
+        if pd.notna(sma_20) and pd.notna(sma_50) and pd.notna(sma_200):
+            if last_price > sma_20 > sma_50 > sma_200:
+                trend = "🟢 強勢上漲趨勢"
+            elif last_price < sma_20 < sma_50 < sma_200:
+                trend = "🔴 強勢下跌趨勢"
+            elif last_price > sma_50:
+                trend = "🟡 中性偏多"
+            else:
+                trend = "🟠 中性偏空"
         else:
-            trend = "🟠 中性偏空"
+            trend = "⚪ 數據不足"
         
         st.write(f"**趨勢:** {trend}")
         
         # RSI 判斷
         current_rsi = df['RSI'].iloc[-1]
-        if current_rsi > 70:
-            rsi_signal = "🔴 超買 (考慮獲利了結)"
-        elif current_rsi < 30:
-            rsi_signal = "🟢 超賣 (可能是買入機會)"
+        if pd.notna(current_rsi):
+            if current_rsi > 70:
+                rsi_signal = "🔴 超買 (考慮獲利了結)"
+            elif current_rsi < 30:
+                rsi_signal = "🟢 超賣 (可能是買入機會)"
+            else:
+                rsi_signal = "🟡 中性"
+            st.write(f"**RSI ({current_rsi:.2f}):** {rsi_signal}")
         else:
-            rsi_signal = "🟡 中性"
-        
-        st.write(f"**RSI ({current_rsi:.2f}):** {rsi_signal}")
+            st.write(f"**RSI:** ⚪ 數據不足")
         
         # MACD 判斷
         current_macd = df['MACD'].iloc[-1]
         current_signal = df['MACD_signal'].iloc[-1]
-        if current_macd > current_signal:
-            macd_signal = "🟢 多頭訊號"
+        if pd.notna(current_macd) and pd.notna(current_signal):
+            if current_macd > current_signal:
+                macd_signal = "🟢 多頭訊號"
+            else:
+                macd_signal = "🔴 空頭訊號"
+            st.write(f"**MACD:** {macd_signal}")
         else:
-            macd_signal = "🔴 空頭訊號"
-        
-        st.write(f"**MACD:** {macd_signal}")
+            st.write(f"**MACD:** ⚪ 數據不足")
     
     with col2:
         st.subheader("統計數據")
         returns = df['Close'].pct_change()
-        st.write(f"**波動率 (年化):** {returns.std() * (252**0.5) * 100:.2f}%")
-        st.write(f"**最大回撤:** {(df['Close'] / df['Close'].cummax() - 1).min() * 100:.2f}%")
-        st.write(f"**夏普比率 (簡化):** {(returns.mean() / returns.std() * (252**0.5)):.2f}")
+        volatility = returns.std() * (252**0.5) * 100
+        max_drawdown = (df['Close'] / df['Close'].cummax() - 1).min() * 100
+        sharpe = returns.mean() / returns.std() * (252**0.5) if returns.std() != 0 else 0
+        
+        st.write(f"**波動率 (年化):** {volatility:.2f}%")
+        st.write(f"**最大回撤:** {max_drawdown:.2f}%")
+        st.write(f"**夏普比率 (簡化):** {sharpe:.2f}")
     
     # 歷史數據表格
     with st.expander("📊 查看原始數據"):
